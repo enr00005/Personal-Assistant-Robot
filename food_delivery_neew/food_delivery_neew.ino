@@ -43,7 +43,7 @@ const char* password = "12345678";
 WebServer server(80);
 
 // ================= REASSIGNED PIN DEFINITIONS =================
-// Left Motor (L298N) - Reassigned away from I2S Pins (25, 26, 27)
+// Left Motor (L298N) 
 #define ENA 13
 #define IN1 12
 #define IN2 15
