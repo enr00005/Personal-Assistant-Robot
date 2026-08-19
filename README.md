@@ -1,7 +1,7 @@
 # Personal-Assistant-Robot (Stage 1)
 This project is a Personal Assistant Robot(Stage-1) built using an Evoed Arduino board. It is designed to perform various tasks through voice commands and mobile control via Bluetooth. The robot also includes an ESP32-CAM module for real-time video streaming. This combination of voice, Bluetooth, and camera features makes it an intelligent and interactive robot capable of assisting users in daily activities.
 
-**#NEW**
+**NEW**
 # 🤖 Autonomous ESP32 Hotel Food Delivery Robot (Stage 2)
 
 An autonomous, multi-functional food delivery robot powered by the ESP32 microcontroller. The system features a **Wi-Fi Web Dashboard** for real-time ordering, a **5-stage Finite State Machine (FSM)** for dual-direction line-following, an **I2S MP3 audio announcement system** reading from **LittleFS**, and integrated obstacle avoidance.
