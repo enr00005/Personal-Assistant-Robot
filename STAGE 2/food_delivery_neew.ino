@@ -43,7 +43,7 @@ const char* password = "12345678";
 WebServer server(80);
 
 // ================= REASSIGNED PIN DEFINITIONS =================
-// Left Motor (L298N) 
+// Left Motor (L298N) - Reassigned away from I2S Pins (25, 26, 27)
 #define ENA 13
 #define IN1 12
 #define IN2 15
@@ -69,11 +69,11 @@ WebServer server(80);
 #define ECHO_PIN            4
 
 // ================= CONFIGURATION =================
-#define BASE_SPEED     100
+#define BASE_SPEED     120
 #define TURN_SPEED     160
 
 #define LINE_DETECTED HIGH 
-#define FOOD_DETECTED LOW   
+#define FOOD_DETECTED LOW    
 
 #define OBSTACLE_DISTANCE_CM 10 
 
@@ -82,11 +82,15 @@ bool isOrderPlaced = false;
 String currentOrderDetails = "No active order";
 
 enum RobotState {
-  WAIT_FOR_ORDER,   
-  WAIT_FOR_FOOD,    
-  DELIVER_FORWARD,  
-  WAIT_AT_TABLE,    
-  RETURN_BACKWARD   
+  WAIT_FOR_ORDER,    
+  WAIT_FOR_FOOD,     
+  DELIVER_FORWARD,   
+  WAIT_AT_TABLE,     
+  RETURN_BACKWARD,
+  PICKUP_FORWARD,        // Going to table to collect empty plates
+  WAIT_AT_TABLE_PLATE,   // Waiting at table for plate to be placed on tray
+  PICKUP_RETURN,         // Returning to station with plates for washing
+  WAIT_AT_STATION_PLATE  // Waiting at station for staff to take plate off tray
 };
 
 RobotState currentState = WAIT_FOR_ORDER;
@@ -104,6 +108,7 @@ void followLineBackward();
 bool isObstacleDetected();
 void handleRoot();
 void handleOrder();
+void handlePickup();
 void handleStatus();
 
 // ================= HTML WEB DASHBOARD =================
@@ -125,6 +130,8 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     input[type=number] { width: 55px; padding: 6px; border: 1px solid #ccc; border-radius: 5px; text-align: center; font-size: 1rem; }
     .btn-order { width: 100%; background: #27ae60; color: white; padding: 14px; border: none; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; margin-top: 15px; transition: 0.2s; }
     .btn-order:hover { background: #219150; }
+    .btn-pickup { width: 100%; background: #e67e22; color: white; padding: 14px; border: none; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; margin-top: 10px; transition: 0.2s; }
+    .btn-pickup:hover { background: #d35400; }
     .status-box { margin-top: 25px; padding: 15px; background: #eef7ff; border-radius: 8px; border-left: 5px solid #3498db; text-align: left; }
     .status-title { font-weight: bold; color: #2980b9; }
   </style>
@@ -159,6 +166,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     </div>
 
     <button class="btn-order" onclick="placeOrder()">Place Order</button>
+    <button class="btn-pickup" onclick="requestPickup()">Request Plate Pickup</button>
 
     <div class="status-box">
       <div class="status-title">Order Status:</div>
@@ -179,6 +187,15 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       }
 
       fetch(`/order?pizza=${pizza}&burger=${burger}&donut=${donut}`)
+        .then(res => res.text())
+        .then(msg => {
+          alert(msg);
+          checkStatus();
+        });
+    }
+
+    function requestPickup() {
+      fetch('/pickup')
         .then(res => res.text())
         .then(msg => {
           alert(msg);
@@ -264,6 +281,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/order", handleOrder);
+  server.on("/pickup", handlePickup);
   server.on("/status", handleStatus);
   server.begin();
 
@@ -370,6 +388,73 @@ void loop() {
         followLineBackward();
       }
       break;
+
+    // ================= PLATE PICKUP STATES =================
+    case PICKUP_FORWARD:
+      if (isObstacleDetected()) {
+        stopMotors();
+        updateLCD("Obstacle Ahead!", "Waiting...");
+        delay(2000);
+        break;
+      }
+
+      if (frontLeft && frontRight) {
+        Serial.println("Reached Table for Pickup!");
+        stopMotors();
+        updateLCD("Pickup Arrived", "Place Plate on Tray");
+        currentState = WAIT_AT_TABLE_PLATE;
+      } else {
+        updateLCD("Going for Pickup", "Moving to Table");
+        followLineForward();
+      }
+      break;
+
+    case WAIT_AT_TABLE_PLATE:
+      stopMotors();
+      updateLCD("Pickup Arrived", "Place Plate on Tray");
+
+      if (foodPresent) {
+        Serial.println("Plate placed on tray! Returning to station...");
+        updateLCD("Plate Collected!", "Returning Home..");
+        delay(1500);
+        currentState = PICKUP_RETURN;
+      }
+      break;
+
+    case PICKUP_RETURN:
+      if (isObstacleDetected()) {
+        stopMotors();
+        updateLCD("Obstacle Behind!", "Waiting...");
+        delay(2000);
+        break;
+      }
+
+      if (backLeft && backRight) {
+        Serial.println("Reached Station with Plate!");
+        stopMotors();
+        // FIXED: Transition to WAIT_AT_STATION_PLATE so it stays stopped 
+        // and doesn't fall back into line tracking due to momentum drift.
+        currentState = WAIT_AT_STATION_PLATE;
+      } else {
+        updateLCD("Returning w/ Plate", "Moving Backward");
+        followLineBackward();
+      }
+      break;
+
+    case WAIT_AT_STATION_PLATE:
+      stopMotors();
+      updateLCD("Back at Station", "Take Plate off Tray");
+
+      // Wait until staff takes the plate off for washing (!foodPresent)
+      if (!foodPresent) {
+        Serial.println("Plate taken by staff for washing!");
+        updateLCD("Plate Collected", "Resetting...");
+        delay(1000);
+        isOrderPlaced = false;
+        currentOrderDetails = "No active order";
+        currentState = WAIT_FOR_ORDER;
+      }
+      break;
   }
 }
 
@@ -378,17 +463,13 @@ void audio_eof_mp3(const char *info) {
   Serial.print("Finished playing: "); 
   Serial.println(info);
   
-  // Sequence rule: When welcome.mp3 finishes at table, wait 1 sec and play enjoyfood.mp3
   if (strstr(info, "welcome.mp3")) {
     delay(1000);
     playVoice("/enjoyfood.mp3");
   }
 }
 
-void audio_info(const char *info) {
-  // Uncomment to debug detailed audio logs:
-  // Serial.println(info);
-}
+void audio_info(const char *info) {}
 
 // ================= WEB SERVER HANDLERS =================
 void handleRoot() {
@@ -410,6 +491,16 @@ void handleOrder() {
   server.send(200, "text/plain", "Order Placed Successfully!");
 }
 
+void handlePickup() {
+  if (currentState == WAIT_FOR_ORDER) {
+    currentOrderDetails = "Plate Pickup Request";
+    currentState = PICKUP_FORWARD;
+    server.send(200, "text/plain", "Pickup Request Received! Robot is heading to the table.");
+  } else {
+    server.send(200, "text/plain", "Robot is currently busy with another task!");
+  }
+}
+
 void handleStatus() {
   String statusMsg;
   if (currentState == WAIT_FOR_ORDER) statusMsg = "Ready for orders (Station)";
@@ -417,6 +508,10 @@ void handleStatus() {
   else if (currentState == DELIVER_FORWARD) statusMsg = "Food is being delivered...";
   else if (currentState == WAIT_AT_TABLE) statusMsg = "Arrived at table! Please pick up food.";
   else if (currentState == RETURN_BACKWARD) statusMsg = "Returning to station...";
+  else if (currentState == PICKUP_FORWARD) statusMsg = "Going to table to collect plates...";
+  else if (currentState == WAIT_AT_TABLE_PLATE) statusMsg = "Pickup arrived! Please place plate on tray.";
+  else if (currentState == PICKUP_RETURN) statusMsg = "Returning to station with plates...";
+  else if (currentState == WAIT_AT_STATION_PLATE) statusMsg = "Arrived at station! Please remove plate.";
 
   String jsonResponse = "{\"robotState\":\"" + statusMsg + "\",\"orderDetails\":\"" + currentOrderDetails + "\"}";
   server.send(200, "application/json", jsonResponse);
@@ -450,6 +545,11 @@ void followLineBackward() {
   bool backLeft  = (digitalRead(BACK_LEFT_IR_PIN) == LINE_DETECTED);
   bool backRight = (digitalRead(BACK_RIGHT_IR_PIN) == LINE_DETECTED);
 
+  if (backLeft && backRight) {
+    // Handled in state machine
+    return;
+  }
+
   if (backLeft && !backRight) turnLeftBackward();
   else if (!backLeft && backRight) turnRightBackward();
   else moveBackward();
@@ -481,14 +581,14 @@ void turnRightForward() {
 }
 
 void turnLeftBackward() {
-  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
   analogWrite(ENA, TURN_SPEED); analogWrite(ENB, TURN_SPEED);
 }
 
 void turnRightBackward() {
-  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
   analogWrite(ENA, TURN_SPEED); analogWrite(ENB, TURN_SPEED);
 }
 
